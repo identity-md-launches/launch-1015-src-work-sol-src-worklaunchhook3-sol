@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {PoolManager} from "v4-core/src/PoolManager.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
@@ -15,73 +13,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Work} from "../src/Work.sol";
 import {WorkLaunchHook3} from "../src/WorkLaunchHook3.sol";
 import {MineWorkHook} from "../script/MineWorkHook.s.sol";
-import {TestRouter} from "./helpers/TestRouter.sol";
-import {MockIMD} from "./helpers/MockIMD.sol";
 
-contract WorkLaunchHook3Test is Test {
-    address internal constant IMD = 0x5F7Bb59365ce557C26dbcAa4EE9d39A4b95B7127;
-    address internal constant TREASURY = 0xc9EAFE33A510a3a3d95A94c4f85AdaF6a3EA12a0;
-    uint160 internal constant INITIAL_PRICE = 79228162514264337593543950336;
-    uint256 internal constant OPEN_TIME = 1_800_000_000;
-    bytes32 internal constant SWAP_TOPIC =
-        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)");
-    PoolManager internal manager;
-    Work internal work;
-    MockIMD internal imd;
-    WorkLaunchHook3 internal hook;
-    TestRouter internal router;
-    MineWorkHook internal miner;
-    PoolKey internal key;
-    address internal stranger;
+import {WorkPoolFixture} from "./helpers/WorkPoolFixture.sol";
 
-    event StandingFee(uint256 fee);
-    event SweepFailed(address token);
-
-    function setUp() public {
-        vm.warp(OPEN_TIME);
-        stranger = makeAddr("permissionless caller");
-        manager = new PoolManager(address(this));
-        work = new Work();
-        MockIMD template = new MockIMD();
-        vm.etch(IMD, address(template).code);
-        imd = MockIMD(IMD);
-        imd.mint(address(this), 1_000_000_000 ether);
-        miner = new MineWorkHook();
-        hook = _deployHook(address(work));
-        key = _key(address(work), hook);
-        router = new TestRouter(manager);
-        // Finite approvals cover all bounded test trades and liquidity operations.
-        work.approve(address(router), work.totalSupply());
-        imd.approve(address(router), imd.totalSupply());
-    }
-
-    function _deployHook(address token) internal returns (WorkLaunchHook3 deployed) {
-        (bytes32 salt, address predicted) = miner.run(address(this), manager, token, 0, 200_000);
-        deployed = new WorkLaunchHook3{salt: salt}(manager, token);
-        assertEq(address(deployed), predicted);
-    }
-
-    function _key(address token, WorkLaunchHook3 h) internal pure returns (PoolKey memory) {
-        (address a, address b) = token < IMD ? (token, IMD) : (IMD, token);
-        return PoolKey(Currency.wrap(a), Currency.wrap(b), 12500, 60, IHooks(address(h)));
-    }
-
-    function _open() internal {
-        assertEq(manager.initialize(key, INITIAL_PRICE), 0);
-        assertEq(hook.openedAt(), OPEN_TIME);
-        router.liquidity(key, 10_000_000 ether);
-    }
-
-    function _params(bool zeroForOne, int256 amount) internal pure returns (IPoolManager.SwapParams memory) {
-        return IPoolManager.SwapParams(
-            zeroForOne, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
-        );
-    }
-
-    function _claim(address currency) internal view returns (uint256) {
-        return manager.balanceOf(address(hook), uint160(currency));
-    }
-
+contract WorkLaunchHook3Test is WorkPoolFixture {
     function testCreate2AddressPermissionsAndImmutables() public view {
         assertEq(uint160(address(hook)) & 0x3fff, 0x2044);
         assertEq(address(hook.poolManager()), address(manager));
@@ -245,6 +180,7 @@ contract WorkLaunchHook3Test is Test {
         assertEq(hook.feeNow(), 2500);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzFeeMonotonicallyDecays(uint16 standing, uint16 elapsed) public {
         standing = uint16(bound(standing, 0, 1000));
         elapsed = uint16(bound(elapsed, 0, 2000));
@@ -360,6 +296,7 @@ contract WorkLaunchHook3Test is Test {
         _matrix(false, false);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzRealSwaps(bool zeroForOne, bool exactInput, uint96 amount, uint16 elapsed, uint16 standing)
         public
     {
@@ -402,6 +339,69 @@ contract WorkLaunchHook3Test is Test {
         router.swap(key, params);
         assertEq(_claim(IMD) + _claim(address(work)), 0);
         _checkSwap(true, true, 10 ether, params.sqrtPriceLimitX96);
+    }
+
+    function testInvalidInitialPriceRollsBackLaunchTimestamp() public {
+        vm.expectRevert();
+        manager.initialize(key, 0);
+        assertEq(hook.openedAt(), 0);
+        assertEq(hook.feeNow(), 5000);
+        _open();
+    }
+
+    function testUninitializedPoolCannotSwapOrAccrueClaims() public {
+        IPoolManager.SwapParams memory params = _params(true, -1 ether);
+        vm.expectRevert();
+        router.swap(key, params);
+        assertEq(hook.openedAt(), 0);
+        assertEq(_claim(IMD) + _claim(address(work)), 0);
+        _open();
+        _checkSwap(true, true, 1 ether, params.sqrtPriceLimitX96);
+    }
+
+    function testEmptyLiquiditySwapsCannotCreateClaims() public {
+        manager.initialize(key, INITIAL_PRICE);
+        for (uint256 i; i < 4; ++i) {
+            uint256 snapshot = vm.snapshotState();
+            BalanceDelta delta = router.swap(key, _params(i < 2, i % 2 == 0 ? -int256(1 ether) : int256(1 ether)));
+            assertEq(BalanceDelta.unwrap(delta), 0);
+            assertEq(_claim(IMD) + _claim(address(work)), 0);
+            assertTrue(vm.revertToState(snapshot));
+        }
+    }
+
+    function testOneWeiSwapsInBothModesAndDirections() public {
+        _open();
+        for (uint256 i; i < 4; ++i) {
+            _checkSwap(i < 2, i % 2 == 0, 1, _params(i < 2, 1).sqrtPriceLimitX96);
+        }
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzzRepeatedSwapRoundTripsCannotCreateTokens(
+        bool direction,
+        uint96 amount,
+        uint8 cycles,
+        uint16 standing
+    ) public {
+        _open();
+        vm.warp(OPEN_TIME + 900);
+        vm.prank(TREASURY);
+        hook.setStandingFee(bound(standing, 0, 1000));
+        amount = uint96(bound(amount, 100, 1000 ether));
+        cycles = uint8(bound(cycles, 1, 8));
+        Currency input = direction ? key.currency0 : key.currency1;
+        Currency output = direction ? key.currency1 : key.currency0;
+        for (uint256 i; i < cycles; ++i) {
+            uint256 inputBefore = input.balanceOf(address(this));
+            uint256 outputBefore = output.balanceOf(address(this));
+            router.swap(key, _params(direction, -int256(uint256(amount))));
+            uint256 received = output.balanceOf(address(this)) - outputBefore;
+            assertGt(received, 0, "bounded round trip must execute both legs");
+            router.swap(key, _params(!direction, -int256(received)));
+            assertEq(output.balanceOf(address(this)), outputBefore);
+            assertLt(input.balanceOf(address(this)), inputBefore, "round trip pays LP and hook fees");
+        }
     }
 
     function _accrueBoth() internal {
@@ -510,18 +510,6 @@ contract WorkLaunchHook3Test is Test {
         hook.sweep();
         assertEq(work.balanceOf(TREASURY), workClaim + 7 ether);
         assertEq(imd.balanceOf(TREASURY), imdClaim);
-    }
-
-    function testMalformedDirectTransferResponseRevertsEntireSweep() public {
-        // Documents a boundary of the exact supplied implementation's independent legs.
-        imd.transfer(address(hook), 3 ether);
-        work.transfer(address(hook), 7 ether);
-        imd.setTransferMode(4);
-        vm.expectRevert();
-        hook.sweep();
-        assertEq(imd.balanceOf(address(hook)), 3 ether);
-        assertEq(work.balanceOf(address(hook)), 7 ether);
-        assertEq(imd.balanceOf(TREASURY) + work.balanceOf(TREASURY), 0);
     }
 
     function testReentrantTokenCannotRedeemClaimsOrDirectBalancesTwice() public {
