@@ -1,1 +1,21 @@
-{"kind":"univ4_hook","hook":{"contract":"WorkLaunchHook3","constructorArgs":["$poolManager","$token"],"permissions":["beforeInitialize","afterSwap","afterSwapReturnDelta"]},"token":{"contract":"Work","name":"Work","symbol":"WORK","decimals":18},"pool":{"pairedCurrency":"0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127","fee":12500,"tickSpacing":60,"initialPrice":"79228162514264337593543950336"},"notes":"Work (WORK) is a plain fixed-supply OpenZeppelin ERC-20: 1,000,000,000 with 18 decimals minted once to msg.sender, no admin. WorkLaunchHook(PoolManager, token) accepts exactly one IMD/WORK pool (fee 12500, tickSpacing 60) and records openedAt at initialize. Every swap pays a hook fee equal to the same share of what the trader pays or receives in both swap modes (exact-out fees are grossed up): 50% at openedAt sliding linearly to the standing fee over 900 s, then the standing fee (2%; 0xc9eafe33a510a3a3d95a94c4f85adaf6a3ea12a0 may set 0-10%). Fees accrue as PoolManager claims and go to 0xc9eafe33a510a3a3d95a94c4f85adaf6a3ea12a0 via a permissionless sweep() with independent IMD and WORK legs and no native-ETH leg. Flags 0x2044. No other admin, no upgrades."}
+{
+  "kind": "univ4_hook",
+  "hook": {
+    "contract": "WorkLaunchHook3",
+    "constructorArgs": ["$poolManager", "$token"],
+    "permissions": ["beforeInitialize", "afterSwap", "afterSwapReturnDelta"]
+  },
+  "token": {
+    "contract": "Work",
+    "name": "Work",
+    "symbol": "WORK",
+    "decimals": 18
+  },
+  "pool": {
+    "pairedCurrency": "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "notes": "Work (WORK) is a plain fixed-supply OpenZeppelin ERC-20: 1,000,000,000 with 18 decimals minted once to msg.sender, no admin. WorkLaunchHook(PoolManager, token) accepts exactly one IMD/WORK pool (fee 12500, tickSpacing 60) and records openedAt at initialize. Every swap pays a hook fee equal to the same share of what the trader pays or receives in both swap modes (exact-out fees are grossed up): 50% at openedAt sliding linearly to the standing fee over 900 s, then the standing fee (2%; 0xc9eafe33a510a3a3d95a94c4f85adaf6a3ea12a0 may set 0-10%). Fees accrue as PoolManager claims and go to 0xc9eafe33a510a3a3d95a94c4f85adaf6a3ea12a0 via a permissionless sweep() with independent IMD and WORK legs and no native-ETH leg. Flags 0x2044. No other admin, no upgrades."
+}
